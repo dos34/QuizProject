@@ -2,12 +2,7 @@ using Quiz.Contracts.Events;
 
 namespace Quiz.Realtime.Hubs;
 
-/// <summary>
-/// Контракт с фронтом (web/common.js, play.html, host.html): методы, которые сервер вызывает у клиента.
-/// Имена методов = имена событий на фронте — не переименовывать.
-/// Группы: game:{gameId} — все участники игры, game:{gameId}:host — только ведущий (AnswerProgress).
-/// Хаб: /hubs/game, метод JoinGame(Guid gameId); токен приходит в query-параметре access_token.
-/// </summary>
+/// <summary>Методы, которые сервер вызывает у клиента. Имена методов = имена событий на фронте.</summary>
 public interface IGameClient
 {
     Task PlayerJoined(PlayerJoined message);
