@@ -23,9 +23,28 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function show(id) { document.querySelectorAll('[data-screen]').forEach((el) => el.classList.toggle('hidden', el.id !== id)); }
 
+let signalRClientPromise;
+function getSignalRClient() {
+  if (window.signalR) return Promise.resolve(window.signalR);
+  if (!signalRClientPromise) {
+    signalRClientPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js';
+      script.onload = () => {
+        if (window.signalR) resolve(window.signalR);
+        else reject(new Error('The SignalR client loaded without exposing its API.'));
+      };
+      script.onerror = () => reject(new Error('Unable to load the SignalR client from either CDN.'));
+      document.head.append(script);
+    });
+  }
+  return signalRClientPromise;
+}
+
 // Подключение к хабу. onState вызывается после (пере)подключения — клиент забирает актуальное состояние по REST.
 async function connectHub(gameId, token, handlers, onState) {
-  const conn = new signalR.HubConnectionBuilder()
+  const signalRClient = await getSignalRClient();
+  const conn = new signalRClient.HubConnectionBuilder()
     .withUrl('/hubs/game', { accessTokenFactory: () => token })
     .withAutomaticReconnect()
     .build();
