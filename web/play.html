@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Квиз — игрок</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+  <script src="common.js"></script>
+</head>
+<body>
+<main>
+  <section id="join" data-screen class="center">
+    <h1>Вход в игру</h1>
+    <input id="pin" inputmode="numeric" maxlength="6" placeholder="PIN" class="big" autocomplete="off">
+    <input id="nick" maxlength="24" placeholder="Никнейм" class="big" autocomplete="off">
+    <button id="joinBtn" class="big">Войти</button>
+    <div id="joinErr" class="error"></div>
+  </section>
+
+  <section id="wait" data-screen class="hidden">
+    <div class="row spread"><strong id="meName"></strong><span class="muted">Счёт: <b id="myScore">0</b></span></div>
+    <div id="waitText" class="status">Вы в игре! Ждём, пока ведущий начнёт…</div>
+    <div id="lb"></div>
+  </section>
+
+  <section id="question" data-screen class="hidden">
+    <div class="row spread"><span class="muted" id="qNum"></span><span class="timer" id="timer"></span></div>
+    <h2 id="qText"></h2>
+    <div class="options" id="opts"></div>
+    <div id="answerState" class="status"></div>
+    <div id="rankLine" class="muted" style="text-align:center"></div>
+  </section>
+
+  <section id="finished" data-screen class="hidden">
+    <h1>Игра окончена</h1>
+    <div id="finalPlace" class="status"></div>
+    <div id="finalLb" class="card"></div>
+    <a class="btn secondary" href="play.html" onclick="sessionStorage.removeItem('quiz.player')">Новая игра</a>
+  </section>
+</main>
+
+<script>
+let session = JSON.parse(sessionStorage.getItem('quiz.player') || 'null'); // {gameId, playerId, nickname, token}
+let current = { index: -1, chosen: null, options: [] };
+
+$('#joinBtn').onclick = async () => {
+  $('#joinErr').textContent = '';
+  try {
+    session = await Api.post('/api/games/join', { pin: $('#pin').value.trim(), nickname: $('#nick').value.trim() });
+    sessionStorage.setItem('quiz.player', JSON.stringify(session));
+    await start();
+  } catch (e) { $('#joinErr').textContent = e.message; }
+};
+
+async function start() {
+  $('#meName').textContent = session.nickname;
+  await connectHub(session.gameId, session.token, {
+    QuestionStarted: (m) => renderQuestion(m.questionIndex, m.totalQuestions, m.text, m.options, m.deadline, false),
+    QuestionClosed: (m) => renderClosed(m.correctOptionIndex),
+    LeaderboardUpdated: (m) => renderLeaderboard(m.entries),
+    GameFinished: (m) => renderFinished(m.leaderboard),
+  }, loadState);
+  await loadState();
+}
+
+// Восстановление состояния (первый вход, F5, переподключение).
+async function loadState() {
+  try {
+    const s = await Api.get(`/api/games/${session.gameId}`, session.token);
+    syncClock(s.serverTime);
+    if (s.status === 'Finished' || s.status === 'Abandoned') {
+      renderFinished(await Api.get(`/api/games/${session.gameId}/leaderboard`, session.token));
+      return;
+    }
+    if (s.currentQuestion) {
+      const q = s.currentQuestion;
+      renderQuestion(q.index, s.totalQuestions, q.text, q.options, q.deadline, s.hasAnsweredCurrent);
+      if (s.phase === 'Closed') renderClosed(q.correctOptionIndex);
+    } else {
+      show('wait');
+    }
+    renderLeaderboard(await Api.get(`/api/games/${session.gameId}/leaderboard`, session.token));
+  } catch (e) {
+    sessionStorage.removeItem('quiz.player');
+    session = null;
+    show('join');
+    $('#joinErr').textContent = e.message;
+  }
+}
+
+function renderQuestion(index, total, text, options, deadline, alreadyAnswered) {
+  if (current.index !== index) current = { index, chosen: null, options };
+  show('question');
+  $('#qNum').textContent = `Вопрос ${index + 1} из ${total}`;
+  $('#qText').textContent = text;
+  $('#answerState').textContent = alreadyAnswered ? 'Ответ принят, ждём остальных…' : '';
+  $('#rankLine').textContent = '';
+  $('#opts').innerHTML = options.map((o, i) =>
+    `<button class="option o${i}" data-i="${i}" ${alreadyAnswered ? 'disabled' : ''}>${esc(o)}</button>`).join('');
+  $('#opts').querySelectorAll('button').forEach((b) => (b.onclick = () => answer(+b.dataset.i)));
+  runTimer($('#timer'), deadline);
+}
+
+async function answer(i) {
+  $('#opts').querySelectorAll('button').forEach((b) => (b.disabled = true));
+  try {
+    await Api.post(`/api/games/${session.gameId}/answers`, { questionIndex: current.index, optionIndex: i }, session.token);
+    current.chosen = i;
+    $('#opts').querySelector(`[data-i="${i}"]`).classList.add('chosen');
+    $('#answerState').textContent = 'Ответ принят, ждём остальных…';
+  } catch (e) {
+    $('#answerState').textContent = e.message;
+  }
+}
+
+function renderClosed(correct) {
+  stopTimer();
+  $('#timer').textContent = '';
+  $('#opts').querySelectorAll('button').forEach((b) => {
+    b.disabled = true;
+    b.classList.add(+b.dataset.i === correct ? 'correct' : 'dim');
+  });
+  const text = current.chosen === null ? 'Время вышло' : current.chosen === correct ? 'Верно! 🎉' : 'Неверно';
+  $('#answerState').textContent = text;
+}
+
+function renderLeaderboard(entries) {
+  const me = entries.find((e) => e.playerId === session.playerId);
+  if (me) $('#myScore').textContent = me.score;
+  $('#lb').innerHTML = `<div class="card"><h3>Таблица лидеров</h3>${leaderboardTable(entries, session.playerId)}</div>`;
+  if (me) $('#rankLine').textContent = `${me.rank}-е место · ${me.score} очков`;
+}
+
+function renderFinished(entries) {
+  stopTimer();
+  show('finished');
+  const me = entries.find((e) => e.playerId === session.playerId);
+  $('#finalPlace').textContent = me ? `Ваше место: ${me.rank} · ${me.score} очков` : '';
+  $('#finalLb').innerHTML = leaderboardTable(entries, session.playerId);
+}
+
+if (session) start(); else show('join');
+</script>
+</body>
+</html>

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Квиз — ведущий</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+  <script src="common.js"></script>
+</head>
+<body>
+<main>
+  <section id="auth" data-screen class="center">
+    <h1>Вход для ведущего</h1>
+    <input id="login" placeholder="Логин" class="big" autocomplete="username">
+    <input id="password" type="password" placeholder="Пароль (от 6 символов)" class="big" autocomplete="current-password">
+    <div class="row"><button id="loginBtn">Войти</button><button id="registerBtn" class="secondary">Регистрация</button></div>
+    <div id="authErr" class="error"></div>
+  </section>
+
+  <section id="quizzes" data-screen class="hidden">
+    <div class="row spread"><h1>Мои викторины</h1><span><span id="who" class="muted"></span> <button class="secondary" id="logoutBtn">Выйти</button></span></div>
+    <div class="row"><button id="newQuizBtn">+ Новая викторина</button><button class="secondary" id="demoBtn">+ Демо-викторина</button></div>
+    <div id="quizList"></div>
+    <div id="listErr" class="error"></div>
+  </section>
+
+  <section id="editor" data-screen class="hidden">
+    <h1 id="editorTitle">Новая викторина</h1>
+    <div class="card">
+      <input id="qzTitle" placeholder="Название" style="width:100%">
+    </div>
+    <div id="qList"></div>
+    <div class="row"><button class="secondary" id="addQBtn">+ Вопрос</button></div>
+    <div class="row" style="margin-top:16px"><button id="saveBtn">Сохранить</button><button class="secondary" id="cancelBtn">Отмена</button></div>
+    <div id="editErr" class="error"></div>
+  </section>
+
+  <section id="lobby" data-screen class="hidden">
+    <div class="center" style="padding-top:0">
+      <p class="muted">Заходите на <b id="joinUrl"></b> и вводите PIN</p>
+      <div class="pin" id="pinView"></div>
+      <h3 id="lobbyTitle"></h3>
+    </div>
+    <div class="card"><div class="row spread"><b>Игроки: <span id="playersCount">0</span></b></div><div class="chips" id="players"></div></div>
+    <div class="row"><button id="startBtn" class="big">Старт</button></div>
+    <div id="lobbyErr" class="error"></div>
+  </section>
+
+  <section id="game" data-screen class="hidden">
+    <div class="row spread"><span class="muted" id="hqNum"></span><span class="timer" id="htimer"></span></div>
+    <h2 id="hqText"></h2>
+    <div class="options" id="hopts"></div>
+    <div class="row spread" style="margin-top:12px">
+      <b id="progress"></b>
+      <button id="nextBtn">Закрыть вопрос</button>
+    </div>
+    <div id="hlb"></div>
+    <div id="gameErr" class="error"></div>
+  </section>
+
+  <section id="final" data-screen class="hidden">
+    <h1>Итоги</h1>
+    <div id="podium" class="card"></div>
+    <button class="secondary" id="backBtn">К викторинам</button>
+  </section>
+</main>
+
+<script>
+let auth = JSON.parse(localStorage.getItem('quiz.host') || 'null'); // {token, login}
+let game = null; // {gameId, pin}
+let hub = null;
+let editingId = null;
+
+// ---------- auth ----------
+async function doAuth(kind) {
+  $('#authErr').textContent = '';
+  try {
+    auth = await Api.post(`/api/auth/${kind}`, { login: $('#login').value.trim(), password: $('#password').value });
+    localStorage.setItem('quiz.host', JSON.stringify(auth));
+    await openQuizzes();
+  } catch (e) { $('#authErr').textContent = e.message; }
+}
+$('#loginBtn').onclick = () => doAuth('login');
+$('#registerBtn').onclick = () => doAuth('register');
+$('#logoutBtn').onclick = () => { localStorage.removeItem('quiz.host'); auth = null; show('auth'); };
+
+// ---------- quizzes ----------
+async function openQuizzes() {
+  show('quizzes');
+  $('#who').textContent = auth.login;
+  $('#listErr').textContent = '';
+  try {
+    const list = await Api.get('/api/quizzes', auth.token);
+    $('#quizList').innerHTML = list.length ? list.map((q) => `
+      <div class="card row spread">
+        <div><b>${esc(q.title)}</b><div class="muted">${q.questionsCount} вопр.</div></div>
+        <div class="row">
+          <button data-play="${q.id}">Запустить игру</button>
+          <button class="secondary" data-edit="${q.id}">Изменить</button>
+          <button class="secondary" data-del="${q.id}">Удалить</button>
+        </div>
+      </div>`).join('') : '<p class="muted">Пока нет викторин</p>';
+    $('#quizList').querySelectorAll('[data-play]').forEach((b) => (b.onclick = () => createGame(b.dataset.play)));
+    $('#quizList').querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => openEditor(b.dataset.edit)));
+    $('#quizList').querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
+      if (!confirm('Удалить викторину?')) return;
+      await Api.del(`/api/quizzes/${b.dataset.del}`, auth.token);
+      openQuizzes();
+    }));
+  } catch (e) {
+    if (/401|Unauthorized/.test(e.message)) { localStorage.removeItem('quiz.host'); show('auth'); return; }
+    $('#listErr').textContent = e.message;
+  }
+}
+
+$('#demoBtn').onclick = async () => {
+  await Api.post('/api/quizzes', {
+    title: 'Демо: общие знания',
+    questions: [
+      { text: 'Сколько будет 2 + 2 × 2?', options: ['8', '6', '4', '10'], correctOptionIndex: 1, timeLimitSeconds: 15 },
+      { text: 'Столица Австралии?', options: ['Сидней', 'Мельбурн', 'Канберра', 'Перт'], correctOptionIndex: 2, timeLimitSeconds: 20 },
+      { text: 'Какой протокол использует SignalR в первую очередь?', options: ['WebSocket', 'FTP', 'SMTP', 'gRPC'], correctOptionIndex: 0, timeLimitSeconds: 15 },
+    ],
+  }, auth.token);
+  openQuizzes();
+};
+
+// ---------- editor ----------
+function questionBlock(q, n) {
+  const opts = q.options.length ? q.options : ['', '', '', ''];
+  return `<div class="card q-edit">
+    <div class="row spread"><b>Вопрос ${n + 1}</b><button class="secondary" data-rm>Удалить</button></div>
+    <input type="text" data-text placeholder="Текст вопроса" style="width:100%;margin:6px 0" value="${esc(q.text)}">
+    ${opts.map((o, i) => `<div class="opt"><input type="radio" name="c${n}" value="${i}" ${i === q.correctOptionIndex ? 'checked' : ''} title="Правильный">
+      <input type="text" data-opt placeholder="Вариант ${i + 1}" value="${esc(o)}"></div>`).join('')}
+    <label class="muted">Время, сек: <input type="number" data-time min="5" max="300" value="${q.timeLimitSeconds || 20}" style="width:80px"></label>
+  </div>`;
+}
+function readQuestions() {
+  return [...$('#qList').querySelectorAll('.q-edit')].map((el) => {
+    const options = [...el.querySelectorAll('[data-opt]')].map((i) => i.value.trim()).filter((v) => v);
+    const checked = el.querySelector('input[type=radio]:checked');
+    return {
+      text: el.querySelector('[data-text]').value.trim(),
+      options,
+      correctOptionIndex: checked ? +checked.value : -1,
+      timeLimitSeconds: +el.querySelector('[data-time]').value,
+    };
+  });
+}
+function renderEditor(questions) {
+  $('#qList').innerHTML = questions.map(questionBlock).join('');
+  $('#qList').querySelectorAll('[data-rm]').forEach((b, i) => (b.onclick = () => {
+    const qs = readQuestions(); qs.splice(i, 1); renderEditor(qs);
+  }));
+}
+async function openEditor(id) {
+  editingId = id || null;
+  $('#editErr').textContent = '';
+  show('editor');
+  if (id) {
+    const q = await Api.get(`/api/quizzes/${id}`, auth.token);
+    $('#editorTitle').textContent = 'Редактирование';
+    $('#qzTitle').value = q.title;
+    renderEditor(q.questions);
+  } else {
+    $('#editorTitle').textContent = 'Новая викторина';
+    $('#qzTitle').value = '';
+    renderEditor([{ text: '', options: [], correctOptionIndex: 0, timeLimitSeconds: 20 }]);
+  }
+}
+$('#newQuizBtn').onclick = () => openEditor();
+$('#addQBtn').onclick = () => renderEditor([...readQuestions(), { text: '', options: [], correctOptionIndex: 0, timeLimitSeconds: 20 }]);
+$('#cancelBtn').onclick = openQuizzes;
+$('#saveBtn').onclick = async () => {
+  $('#editErr').textContent = '';
+  const body = { title: $('#qzTitle').value.trim(), questions: readQuestions() };
+  try {
+    if (editingId) await Api.put(`/api/quizzes/${editingId}`, body, auth.token);
+    else await Api.post('/api/quizzes', body, auth.token);
+    openQuizzes();
+  } catch (e) { $('#editErr').textContent = e.message; }
+};
+
+// ---------- game ----------
+async function createGame(quizId) {
+  try {
+    game = await Api.post('/api/games', { quizId }, auth.token);
+    await openGame(game.gameId);
+  } catch (e) { $('#listErr').textContent = e.message; }
+}
+
+async function openGame(gameId) {
+  sessionStorage.setItem('quiz.hostGame', gameId);
+  if (hub) await hub.stop();
+  const lbEntries = [];
+  hub = await connectHub(gameId, auth.token, {
+    PlayerJoined: (m) => addPlayer(m.nickname, m.playersCount),
+    QuestionStarted: (m) => renderQuestion(m.questionIndex, m.totalQuestions, m.text, m.options, m.deadline),
+    AnswerProgress: (m) => { $('#progress').textContent = `Ответили: ${m.answeredCount} / ${m.playersCount}`; },
+    QuestionClosed: (m) => renderClosed(m.correctOptionIndex, m.optionCounts, m.isLastQuestion),
+    LeaderboardUpdated: (m) => { $('#hlb').innerHTML = `<div class="card"><h3>Таблица лидеров</h3>${leaderboardTable(m.entries)}</div>`; },
+    GameFinished: (m) => renderFinal(m.leaderboard),
+  }, () => loadState(gameId));
+  await loadState(gameId);
+}
+
+async function loadState(gameId) {
+  const s = await Api.get(`/api/games/${gameId}`, auth.token);
+  syncClock(s.serverTime);
+  game = { gameId, pin: s.pin };
+  if (s.status === 'Lobby') {
+    show('lobby');
+    $('#pinView').textContent = s.pin;
+    $('#lobbyTitle').textContent = s.quizTitle;
+    $('#joinUrl').textContent = `${location.host}/play.html`;
+    $('#playersCount').textContent = s.playersCount;
+    const lb = await Api.get(`/api/games/${gameId}/leaderboard`, auth.token);
+    $('#players').innerHTML = lb.map((e) => `<span class="chip">${esc(e.nickname)}</span>`).join('');
+  } else if (s.status === 'Running') {
+    if (s.currentQuestion) {
+      const q = s.currentQuestion;
+      renderQuestion(q.index, s.totalQuestions, q.text, q.options, q.deadline);
+      if (s.phase === 'Closed') renderClosed(q.correctOptionIndex, null, q.index === s.totalQuestions - 1);
+    } else {
+      show('game');
+      $('#hqText').textContent = 'Запускаем…';
+    }
+  } else {
+    renderFinal(await Api.get(`/api/games/${gameId}/leaderboard`, auth.token));
+  }
+}
+
+function addPlayer(nickname, count) {
+  $('#playersCount').textContent = count;
+  $('#players').insertAdjacentHTML('beforeend', `<span class="chip">${esc(nickname)}</span>`);
+}
+
+$('#startBtn').onclick = async () => {
+  $('#lobbyErr').textContent = '';
+  try { await Api.post(`/api/games/${game.gameId}/start`, null, auth.token); }
+  catch (e) { $('#lobbyErr').textContent = e.message; }
+};
+
+function renderQuestion(index, total, text, options, deadline) {
+  show('game');
+  $('#gameErr').textContent = '';
+  $('#hqNum').textContent = `Вопрос ${index + 1} из ${total}`;
+  $('#hqText').textContent = text;
+  $('#hopts').innerHTML = options.map((o, i) => `<div class="option o${i}">${esc(o)}</div>`).join('');
+  $('#progress').textContent = 'Ответили: 0';
+  $('#nextBtn').textContent = 'Закрыть вопрос';
+  $('#hlb').innerHTML = '';
+  runTimer($('#htimer'), deadline);
+}
+
+function renderClosed(correct, counts, isLast) {
+  stopTimer();
+  $('#htimer').textContent = '';
+  [...$('#hopts').children].forEach((el, i) => {
+    el.classList.add(i === correct ? 'correct' : 'dim');
+    if (counts) el.textContent += ` — ${counts[i]}`;
+  });
+  $('#nextBtn').textContent = isLast ? 'Итоги' : 'Следующий вопрос';
+}
+
+$('#nextBtn').onclick = async () => {
+  $('#gameErr').textContent = '';
+  try { await Api.post(`/api/games/${game.gameId}/next`, null, auth.token); }
+  catch (e) { $('#gameErr').textContent = e.message; }
+};
+
+function renderFinal(entries) {
+  stopTimer();
+  sessionStorage.removeItem('quiz.hostGame');
+  show('final');
+  const medals = ['🥇', '🥈', '🥉'];
+  const top = entries.slice(0, 3).map((e, i) => `<div class="status">${medals[i]} ${esc(e.nickname)} — ${e.score}</div>`).join('');
+  $('#podium').innerHTML = top + leaderboardTable(entries);
+}
+$('#backBtn').onclick = openQuizzes;
+
+// ---------- boot ----------
+(async () => {
+  if (!auth) return show('auth');
+  const running = sessionStorage.getItem('quiz.hostGame');
+  try {
+    if (running) await openGame(running); else await openQuizzes();
+  } catch { await openQuizzes(); }
+})();
+</script>
+</body>
+</html>

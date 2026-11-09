@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- Web SDK ради health/readiness (и позже /metrics). Основная работа — consumer'ы и фоновые задачи. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Quiz.Infrastructure\Quiz.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

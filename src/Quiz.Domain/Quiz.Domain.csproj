@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Сущности и чистая бизнес-логика. Без зависимостей от Mongo/ASP.NET — легко тестировать. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Quiz.Contracts\Quiz.Contracts.csproj" />
+  </ItemGroup>
+</Project>

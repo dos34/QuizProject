@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Общая инфраструктура для всех сервисов: Mongo, MassTransit, JWT, логи, health checks. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MassTransit.RabbitMQ" />
+    <PackageReference Include="MongoDB.Driver" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Quiz.Contracts\Quiz.Contracts.csproj" />
+    <ProjectReference Include="..\Quiz.Domain\Quiz.Domain.csproj" />
+  </ItemGroup>
+</Project>
